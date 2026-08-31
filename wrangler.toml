@@ -1,0 +1,23 @@
+# Cloudflare Pages configuration for the LA Black Squad auction app.
+#
+# This is a multi-page static site: every page is its own .html file at the
+# root (index.html = login, admin.html, owner.html, spectator.html). They
+# link/redirect to each other by filename, so all files must live in the
+# same directory root — which is the whole folder being deployed.
+#
+# Deploy with:  npx wrangler pages deploy .
+# (Run from the folder that contains the .html files, i.e. the root.)
+# Or simply "Connect to Git" in the Cloudflare dashboard and it auto-deploys
+# on every push to the main branch.
+
+name = "la-black-squad-auction"
+
+# Serve the static files in this directory (the project root).
+[assets]
+directory = "."
+# Multi-page static site -> no SPA fallback. Unknown paths get a real 404.
+not_found_handling = "404-page"
+
+# Optional: only used when deploying via Wrangler directly.
+[env.production]
+name = "la-black-squad-auction"

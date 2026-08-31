@@ -1,0 +1,9 @@
+# Cache policy for the auction app.
+# HTML must NOT be cached so that every deploy is reflected immediately,
+# and so the role redirects (owner.html / admin.html / spectator.html)
+# always hit the latest copies.
+
+/*.html
+  Cache-Control: no-cache
+
+# Other static request types already default appropriately on Pages.

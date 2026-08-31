@@ -1,0 +1,12 @@
+{
+  "name": "la-black-squad-auction",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LA Black Squad Cricket Player Auction - static multi-page app hosted on Cloudflare Pages",
+  "scripts": {
+    "deploy": "wrangler pages deploy ."
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}
