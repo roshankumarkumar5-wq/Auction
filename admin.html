@@ -824,6 +824,7 @@ function renderLogin(){
 let activeTab = 'live'; // 'live' | 'setup' | 'teams' | 'audit'
 let pickerRoleFilter = 'ALL'; // auctioneer's category filter for the random "next player" draw
 let poolRoleFilter = 'ALL'; // category filter for the Players tab (admin only)
+let poolStatusFilter = 'ALL'; // status filter for the Players tab (ALL | pending | sold | unsold)
 let actionInProgress = false; // guards against double-submitting SOLD/UNSOLD/UNDO on a slow connection
 let timerDuration = 10; // seconds — configurable in Setup, resets on every new bid
 let timerEnabled = false; // whether the countdown is shown at all — off by default, toggle in Setup
@@ -1065,7 +1066,6 @@ function renderPoolPanel(panel){
   panel.appendChild(importWrap);
 
   // role filter chips
-  const filteredAll = players.filter(p => poolRoleFilter==='ALL' || p.role===poolRoleFilter);
   const filterBtns = el('div',''); filterBtns.style.display='flex'; filterBtns.style.gap='6px'; filterBtns.style.flexWrap='wrap'; filterBtns.style.margin='18px 0 10px';
   [['ALL','All Roles'],['BAT','Batters'],['BOWL','Bowlers'],['AR','All-Rounders'],['WK','Wicketkeepers']].forEach(([key,label])=>{
     const count = players.filter(p => key==='ALL' || p.role===key).length;
@@ -1076,28 +1076,69 @@ function renderPoolPanel(panel){
   });
   panel.appendChild(filterBtns);
 
-  // consolidated management list grouped by status
-  const poolWrap = el('div',''); poolWrap.style.maxHeight='480px'; poolWrap.style.overflowY='auto';
-  ['pending','sold','unsold'].forEach(status=>{
-    const group = filteredAll.filter(p=>p.status===status);
-    if(!group.length) return;
-    const groupHeader = el('div',''); groupHeader.style.display='flex'; groupHeader.style.justifyContent='space-between'; groupHeader.style.alignItems='center'; groupHeader.style.margin='10px 0 4px';
-    groupHeader.appendChild(el('div','',`<div style="font-size:11px;text-transform:uppercase;color:rgba(243,236,216,0.4);">${status} (${group.length})</div>`));
-    if(status==='unsold'){
-      const requeueAll = el('a','link','↺ Re-queue all'); requeueAll.style.fontSize='11px';
-      requeueAll.onclick = async ()=>{
-        await Promise.all(group.map(p => writePlayer(p.id, { status:'pending' })));
-        group.forEach(p=>{ p.status='pending'; });
-        render();
-      };
-      groupHeader.appendChild(requeueAll);
-    }
-    poolWrap.appendChild(groupHeader);
-    group.forEach(p=>{
-      const rowWrap = el('div',''); rowWrap.style.padding='7px 0'; rowWrap.style.borderBottom='1px solid var(--line)';
-      const row = el('div',''); row.style.display='flex'; row.style.justifyContent='space-between'; row.style.alignItems='center'; row.style.fontSize='13px';
-      row.innerHTML = `<span><span class="${ROLE_COLORS[p.role]}" style="font-weight:700;">${ROLE_LABELS[p.role]}</span> · ${p.name}</span><span class="mono">${status==='sold'?fmtCr(p.soldPrice):fmtCr(p.base)}</span>`;
+  // status filter chips (choose which list to see)
+  const statusBtns = el('div',''); statusBtns.style.display='flex'; statusBtns.style.gap='6px'; statusBtns.style.flexWrap='wrap'; statusBtns.style.margin='6px 0 12px';
+  [['ALL','All'],['pending','Pending'],['sold','Sold'],['unsold','Unsold']].forEach(([key,label])=>{
+    const count = players.filter(p => key==='ALL' || p.status===key).length;
+    const b = el('button', 'btn '+(poolStatusFilter===key?'btn-gold':'btn-outline'), `${label} (${count})`);
+    b.style.fontSize='12px'; b.style.padding='8px 12px';
+    b.onclick = ()=>{ poolStatusFilter = key; render(); };
+    statusBtns.appendChild(b);
+  });
+  panel.appendChild(statusBtns);
+
+  // filtered set (role filter + status filter)
+  const filtered = players.filter(p => (poolRoleFilter==='ALL' || p.role===poolRoleFilter) && (poolStatusFilter==='ALL' || p.status===poolStatusFilter));
+  const status = poolStatusFilter==='ALL' ? null : poolStatusFilter;
+
+  // optional "requeue all" for unsold view
+  if(status==='unsold' && filtered.length){
+    const bulkRow = el('div',''); bulkRow.style.display='flex'; bulkRow.style.justifyContent='flex-end'; bulkRow.style.marginBottom='6px';
+    const requeueAll = el('a','link','↺ Re-queue all shown'); requeueAll.style.fontSize='11px';
+    requeueAll.onclick = async ()=>{
+      if(!(await confirmDeletePin('re-queue all shown players'))) return;
+      await Promise.all(filtered.map(p => writePlayer(p.id, { status:'pending' })));
+      filtered.forEach(p=>{ p.status='pending'; });
+      render();
+    };
+    bulkRow.appendChild(requeueAll);
+    panel.appendChild(bulkRow);
+  }
+
+  // table
+  const poolWrap = el('div',''); poolWrap.style.maxHeight='480px'; poolWrap.style.overflowY='auto'; poolWrap.style.border='1px solid var(--line)'; poolWrap.style.borderRadius='10px';
+  if(!filtered.length){
+    poolWrap.appendChild(el('div','','<div style="color:rgba(243,236,216,0.4);font-size:13px;padding:16px;">No players match this filter.</div>'));
+  } else {
+    // header row
+    const cols = 'minmax(180px,1.4fr) minmax(150px,0.8fr) minmax(90px,0.7fr) auto';
+    const head = el('div',''); head.style.display='grid'; head.style.gridTemplateColumns=cols; head.style.gap='10px'; head.style.alignItems='center'; head.style.padding='9px 12px'; head.style.borderBottom='1px solid var(--line)'; head.style.fontSize='10px'; head.style.textTransform='uppercase'; head.style.letterSpacing='0.5px'; head.style.color='rgba(243,236,216,0.4)';
+    head.appendChild(el('div','','Player'));
+    head.appendChild(el('div','','Stats'));
+    head.appendChild(el('div','','Base'));
+    head.appendChild(el('div','',''));
+    poolWrap.appendChild(head);
+
+    filtered.forEach(p=>{
+      const rowWrap = el('div',''); rowWrap.style.padding='7px 12px'; rowWrap.style.borderBottom='1px solid var(--line)';
+      const row = el('div',''); row.style.display='grid'; row.style.gridTemplateColumns=cols; row.style.gap='10px'; row.style.alignItems='center'; row.style.fontSize='13px';
+      const playerCell = el('div','');
+      playerCell.innerHTML = `<span class="${ROLE_COLORS[p.role]}" style="font-weight:700;">${ROLE_LABELS[p.role]}</span> · ${p.name}`;
+      const statusTag = status ? null : p.status;
+      if(statusTag) playerCell.insertAdjacentHTML('beforeend', ` <span style="font-size:9px;text-transform:uppercase;color:var(--gold-bright);border:1px solid var(--line);border-radius:6px;padding:1px 5px;">${statusTag}</span>`);
+      row.appendChild(playerCell);
+
+      const statsCell = el('div',''); statsCell.style.fontSize='12px';
+      const stats = statsStripHTML(p);
+      statsCell.innerHTML = stats ? stats.replace('margin-top:10px','margin-top:0') : '<span style="color:rgba(243,236,216,0.35);">—</span>';
+      row.appendChild(statsCell);
+
+      const baseCell = el('div',''); baseCell.className='mono'; baseCell.style.color='var(--gold-bright)';
+      baseCell.textContent = status==='sold' && p.soldPrice!=null ? fmtCr(p.soldPrice) : fmtCr(p.base);
+      row.appendChild(baseCell);
+
       const actions = document.createElement('span'); actions.style.display='flex'; actions.style.alignItems='center'; actions.style.gap='8px'; actions.style.flexShrink='0';
+      actions.style.justifyContent='flex-end';
 
       const editLink = el('a','link','✎ Edit'); editLink.style.fontSize='11px';
       editLink.title = `Edit ${p.name}'s details`;
@@ -1145,12 +1186,13 @@ function renderPoolPanel(panel){
       };
       actions.appendChild(editLink);
 
-      if(status==='pending'){
+      const pStatus = status || p.status;
+      if(pStatus==='pending'){
         const rm = document.createElement('span'); rm.textContent='✕'; rm.style.cursor='pointer'; rm.style.color='var(--stamp-red)'; rm.style.fontSize='13px';
         rm.onclick = async ()=>{ if(!(await confirmDeletePin('remove this player'))) return; players = players.filter(x=>x.id!==p.id); await savePlayers(); render(); };
         actions.appendChild(rm);
       }
-      if(status==='unsold'){
+      if(pStatus==='unsold'){
         const rq = document.createElement('span'); rq.textContent=' ↺ Re-queue'; rq.style.cursor='pointer'; rq.style.color='var(--gold-bright)'; rq.style.fontSize='11px';
         rq.onclick = async ()=>{ await writePlayer(p.id, { status:'pending' }); p.status='pending'; render(); };
         actions.appendChild(rq);
@@ -1171,7 +1213,7 @@ function renderPoolPanel(panel){
         };
         actions.appendChild(alloc);
       }
-      if(status==='sold'){
+      if(pStatus==='sold'){
         const teamName = (teams.find(t=>t.id===p.soldTo)||{}).name || '';
         const rv = document.createElement('span'); rv.textContent=' ↺ Mark Unsold'; rv.style.cursor='pointer'; rv.style.color='var(--stamp-red)'; rv.style.fontSize='11px';
         rv.title = `Resets ${p.name} to base price and returns ${fmtCr(p.soldPrice||p.base||0)} to ${teamName}`;
@@ -1180,11 +1222,9 @@ function renderPoolPanel(panel){
       }
       row.appendChild(actions);
       rowWrap.appendChild(row);
-      const stats = statsStripHTML(p);
-      if(stats) rowWrap.insertAdjacentHTML('beforeend', stats.replace('margin-top:10px','margin-top:3px'));
       poolWrap.appendChild(rowWrap);
     });
-  });
+  }
   panel.appendChild(poolWrap);
 }
 
