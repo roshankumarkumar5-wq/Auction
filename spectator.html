@@ -327,7 +327,7 @@ function attachRealtimeListeners(){
   });
   db.ref('settings/spectatorLoginEnabled').on('value', (snap)=>{
     spectatorLoginEnabled = snap.exists() ? !!snap.val() : false;
-    if(screen === 'login') renderLogin();
+    if(screen === 'login') render();
   });
   db.ref('settings/reserveWarnEnabled').on('value', (snap)=>{
     reserveWarnEnabled = snap.exists() ? !!snap.val() : true;
