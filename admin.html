@@ -405,14 +405,6 @@ function attachRealtimeListeners(){
     squadMinRequired = (snap.exists() && typeof snap.val() === 'number' && snap.val() > 0) ? snap.val() : null;
     if(screen === 'app' && activeTab !== 'setup') render();
   });
-  db.ref('settings/poolTabVisibleToOwner').on('value', (snap)=>{
-    poolTabVisibleToOwner = snap.exists() ? !!snap.val() : true;
-    if(screen === 'app' && activeTab !== 'setup') render();
-  });
-  db.ref('settings/poolTabVisibleToSpectator').on('value', (snap)=>{
-    poolTabVisibleToSpectator = snap.exists() ? !!snap.val() : true;
-    if(screen === 'app' && activeTab !== 'setup') render();
-  });
   db.ref('settings/spectatorLoginEnabled').on('value', (snap)=>{
     spectatorLoginEnabled = snap.exists() ? !!snap.val() : false;
     if(screen === 'login') render();
@@ -831,9 +823,7 @@ function renderLogin(){
 // ---------- APP SHELL ----------
 let activeTab = 'live'; // 'live' | 'setup' | 'teams' | 'audit'
 let pickerRoleFilter = 'ALL'; // auctioneer's category filter for the random "next player" draw
-let poolRoleFilter = 'ALL'; // category filter for the Pending Players tab (all roles can use this)
-let poolTabVisibleToOwner = true; // Setup-configurable: show Pending Players tab to Team Owners
-let poolTabVisibleToSpectator = true; // Setup-configurable: show Pending Players tab to Spectators
+let poolRoleFilter = 'ALL'; // category filter for the Players tab (admin only)
 let actionInProgress = false; // guards against double-submitting SOLD/UNSOLD/UNDO on a slow connection
 let timerDuration = 10; // seconds — configurable in Setup, resets on every new bid
 let timerEnabled = false; // whether the countdown is shown at all — off by default, toggle in Setup
@@ -874,8 +864,7 @@ function renderApp(){
   const tabDefs = [['live','Live Auction']];
   if(me.role==='admin') tabDefs.push(['setup','Setup']);
   tabDefs.push(['teams', me.role==='owner' ? 'My Squad' : 'Teams & Squads']);
-  const showPoolTab = me.role==='admin' || (me.role==='owner' && poolTabVisibleToOwner) || (me.role==='spectator' && poolTabVisibleToSpectator);
-  if(showPoolTab) tabDefs.push(['pool','Pending Players']);
+  if(me.role==='admin') tabDefs.push(['pool','Players']);
   if(me.role==='admin') tabDefs.push(['activity','Activity']);
   if(me.role==='admin') tabDefs.push(['audit','Audit Log']);
   tabDefs.forEach(([key,label])=>{
@@ -886,9 +875,8 @@ function renderApp(){
   root.appendChild(tabs);
 
   const panel = el('div','card'); panel.style.borderRadius='0 10px 10px 10px';
-  if(activeTab==='pool' && !showPoolTab) activeTab = 'live';
   const isAdmin = me.role==='admin';
-  if(!isAdmin && (activeTab==='setup' || activeTab==='audit' || activeTab==='activity')) activeTab = 'live';
+  if(!isAdmin && (activeTab==='setup' || activeTab==='audit' || activeTab==='activity' || activeTab==='pool')) activeTab = 'live';
   if(activeTab==='live') renderLive(panel);
   else if(activeTab==='setup') renderSetup(panel);
   else if(activeTab==='audit') renderAuditPanel(panel);
@@ -924,16 +912,163 @@ function renderActivityPanel(panel){
   panel.appendChild(list);
 }
 
-// ---------- PENDING PLAYERS TAB (everyone) ----------
+// ---------- PLAYERS TAB (admin only) ----------
 function renderPoolPanel(panel){
-  panel.appendChild(el('div','display',`<span style="font-size:20px;color:var(--gold-bright);">Pending Players</span>`));
-  panel.appendChild(el('div','','<div style="font-size:12px;color:rgba(243,236,216,0.5);margin:6px 0 14px;">Players still left to come up for auction, by category.</div>'));
+  panel.appendChild(el('div','display',`<span style="font-size:20px;color:var(--gold-bright);">Players</span>`));
+  panel.appendChild(el('div','','<div style="font-size:12px;color:rgba(243,236,216,0.5);margin:6px 0 14px;">Add, import, edit and manage the player pool.</div>'));
 
-  const pending = players.filter(p=>p.status==='pending');
+  // add player form
+  const pForm = el('div',''); pForm.style.display='grid'; pForm.style.gridTemplateColumns='2fr 1fr 1fr auto'; pForm.style.gap='10px';
+  const pName = el('input',''); pName.placeholder='Player name';
+  const pRole = el('select',''); pRole.innerHTML = `<option value="BAT">Batter</option><option value="BOWL">Bowler</option><option value="AR">All-Rounder</option><option value="WK">Wicketkeeper</option>`;
+  const pBase = el('input',''); pBase.placeholder='Base (₹ Cr)'; pBase.type='number'; pBase.value='0.5'; pBase.step='0.1';
+  const pAdd = el('button','btn btn-gold','+ Add');
+  pForm.appendChild(pName); pForm.appendChild(pRole); pForm.appendChild(pBase); pForm.appendChild(pAdd);
+  panel.appendChild(pForm);
 
-  const filterBtns = el('div',''); filterBtns.style.display='flex'; filterBtns.style.gap='6px'; filterBtns.style.flexWrap='wrap'; filterBtns.style.marginBottom='16px';
+  // optional stats row (collapsed by default)
+  const statsToggle = el('a','link','+ Add stats (matches, runs, SR, wkts, econ, catches)');
+  statsToggle.style.fontSize='11px'; statsToggle.style.display='inline-block'; statsToggle.style.marginTop='8px';
+  panel.appendChild(statsToggle);
+  const statsRow = el('div',''); statsRow.style.display='none'; statsRow.style.gridTemplateColumns='repeat(6,1fr)'; statsRow.style.gap='8px'; statsRow.style.marginTop='8px';
+  const mkStat = (ph)=>{ const i = el('input',''); i.placeholder=ph; i.type='number'; i.value=''; return i; };
+  const sMatches = mkStat('Matches'), sRuns = mkStat('Runs'), sSR = mkStat('Strike Rate'), sWkts = mkStat('Wkts'), sEcon = mkStat('Econ'), sCatches = mkStat('Catches');
+  [sMatches,sRuns,sSR,sWkts,sEcon,sCatches].forEach(i=>statsRow.appendChild(i));
+  panel.appendChild(statsRow);
+  statsToggle.onclick = ()=>{ statsRow.style.display = statsRow.style.display==='none' ? 'grid' : 'none'; };
+
+  pAdd.onclick = async ()=>{
+    if(!pName.value.trim()) return;
+    players.push({
+      id:uid(), name:pName.value.trim(), role:pRole.value, base: parseFloat(pBase.value)||0.5, status:'pending',
+      matches: parseFloat(sMatches.value)||0, runs: parseFloat(sRuns.value)||0, strikeRate: parseFloat(sSR.value)||0,
+      wkts: parseFloat(sWkts.value)||0, econ: parseFloat(sEcon.value)||0, catches: parseFloat(sCatches.value)||0
+    });
+    await savePlayers();
+    pName.value=''; sMatches.value=''; sRuns.value=''; sSR.value=''; sWkts.value=''; sEcon.value=''; sCatches.value='';
+    render();
+  };
+
+  // bulk import from Excel/CSV
+  const importWrap = el('div',''); importWrap.style.marginTop='14px'; importWrap.style.padding='12px'; importWrap.style.border='1px dashed var(--line)'; importWrap.style.borderRadius='10px';
+  importWrap.innerHTML = `<div style="font-size:12px;color:rgba(243,236,216,0.6);margin-bottom:8px;">Bulk import players from Excel/CSV — columns: <span class="mono">Name</span>, <span class="mono">Role</span>, <span class="mono">Base</span>, and optionally <span class="mono">Matches</span>, <span class="mono">Runs</span>, <span class="mono">Strike Rate</span>, <span class="mono">Wkts</span>, <span class="mono">Econ</span>, <span class="mono">Catches</span>, <span class="mono">Team</span>, <span class="mono">Value</span> — column header wording is flexible. Fill in Team + Value for a row to auto-allocate that player to the team at that price (purse deducted, marked sold) instead of adding to the pending pool.</div>`;
+  const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='.xlsx,.xls,.csv';
+  fileInput.style.fontSize='12px'; fileInput.style.color='var(--cream)';
+  const importStatus = el('div',''); importStatus.style.fontSize='12px'; importStatus.style.marginTop='8px'; importStatus.style.color='var(--gold-bright)';
+
+  function findKey(rowKeys, candidates){
+    const norm = k => k.toLowerCase().replace(/[^a-z0-9]/g,'');
+    const normKeys = rowKeys.map(k => ({ raw:k, norm: norm(k) }));
+    for(const cand of candidates){
+      const c = norm(cand);
+      const exact = normKeys.find(k => k.norm === c);
+      if(exact) return exact.raw;
+    }
+    for(const cand of candidates){
+      const c = norm(cand);
+      const partial = normKeys.find(k => k.norm.includes(c));
+      if(partial) return partial.raw;
+    }
+    return null;
+  }
+  function parseNum(v){
+    if(v === undefined || v === null || v === '') return 0;
+    const cleaned = String(v).replace(/[^0-9.\-]/g,'');
+    const n = parseFloat(cleaned);
+    return isNaN(n) ? 0 : n;
+  }
+  function normalizeRole(raw){
+    const r = String(raw||'').toUpperCase();
+    if(r.includes('BOWL')) return 'BOWL';
+    if(r.includes('ALL') || r === 'AR') return 'AR';
+    if(r.includes('WK') || r.includes('KEEP')) return 'WK';
+    return 'BAT';
+  }
+
+  fileInput.onchange = async (e)=>{
+    const file = e.target.files[0]; if(!file) return;
+    importStatus.textContent = 'Reading file…';
+    try{
+      const data = await file.arrayBuffer();
+      const wb = XLSX.read(data, {type:'array'});
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, {defval:''});
+      let added = 0, skipped = 0, allocated = 0, unmatchedTeam = 0;
+      rows.forEach(r=>{
+        const keys = Object.keys(r);
+        const nameKey = findKey(keys, ['name','player','playername']);
+        const roleKey = findKey(keys, ['role','position','category','type']);
+        const baseKey = findKey(keys, ['base','baseprice','price','basepricecr']);
+        const matchesKey = findKey(keys, ['matches','mat']);
+        const runsKey = findKey(keys, ['runs']);
+        const srKey = findKey(keys, ['strikerate','sr']);
+        const wktsKey = findKey(keys, ['wkts','wickets']);
+        const econKey = findKey(keys, ['econ','economy']);
+        const catchesKey = findKey(keys, ['catches','ct']);
+        const teamKey = findKey(keys, ['team','allocatedteam','soldto','teamname']);
+        const valueKey = findKey(keys, ['value','soldprice','soldamount','soldvalue','amount']);
+
+        const nameVal = nameKey ? r[nameKey] : '';
+        if(!nameVal || !String(nameVal).trim()){ skipped++; return; }
+
+        const newPlayer = {
+          id: uid(),
+          name: String(nameVal).trim(),
+          role: normalizeRole(roleKey ? r[roleKey] : 'BAT'),
+          base: baseKey ? (parseNum(r[baseKey]) || 0.5) : 0.5,
+          status:'pending',
+          matches: matchesKey ? parseNum(r[matchesKey]) : 0,
+          runs: runsKey ? parseNum(r[runsKey]) : 0,
+          strikeRate: srKey ? parseNum(r[srKey]) : 0,
+          wkts: wktsKey ? parseNum(r[wktsKey]) : 0,
+          econ: econKey ? parseNum(r[econKey]) : 0,
+          catches: catchesKey ? parseNum(r[catchesKey]) : 0
+        };
+
+        const teamNameRaw = teamKey ? String(r[teamKey]||'').trim() : '';
+        const valueRaw = valueKey ? r[valueKey] : '';
+        if(teamNameRaw && valueRaw !== '' && valueRaw !== undefined && valueRaw !== null){
+          const matchedTeam = teams.find(t => t.name.toLowerCase().trim() === teamNameRaw.toLowerCase());
+          const price = parseNum(valueRaw);
+          if(matchedTeam && price > 0){
+            newPlayer.status = 'sold';
+            newPlayer.soldTo = matchedTeam.id;
+            newPlayer.soldPrice = price;
+            matchedTeam.spent = (matchedTeam.spent||0) + price;
+            matchedTeam.roster = [...(matchedTeam.roster||[]), { playerId: newPlayer.id, price }];
+            allocated++;
+          } else if(!matchedTeam){
+            unmatchedTeam++;
+          }
+        }
+
+        players.push(newPlayer);
+        added++;
+      });
+      await savePlayers();
+      await saveTeams();
+      importStatus.style.color = 'var(--gold-bright)';
+      let summary = `Imported ${added} player(s)`;
+      if(allocated) summary += `, ${allocated} auto-allocated to teams`;
+      if(unmatchedTeam) summary += `, ${unmatchedTeam} had a team name that didn't match any existing team (added as pending instead)`;
+      if(skipped) summary += `, skipped ${skipped} row(s) without a name`;
+      importStatus.textContent = summary + '.';
+      fileInput.value = '';
+      render();
+    }catch(err){
+      importStatus.style.color = 'var(--stamp-red)';
+      importStatus.textContent = 'Could not read that file — make sure it\'s a valid .xlsx/.xls/.csv with a header row.';
+    }
+  };
+  importWrap.appendChild(fileInput);
+  importWrap.appendChild(importStatus);
+  panel.appendChild(importWrap);
+
+  // role filter chips
+  const filteredAll = players.filter(p => poolRoleFilter==='ALL' || p.role===poolRoleFilter);
+  const filterBtns = el('div',''); filterBtns.style.display='flex'; filterBtns.style.gap='6px'; filterBtns.style.flexWrap='wrap'; filterBtns.style.margin='18px 0 10px';
   [['ALL','All Roles'],['BAT','Batters'],['BOWL','Bowlers'],['AR','All-Rounders'],['WK','Wicketkeepers']].forEach(([key,label])=>{
-    const count = pending.filter(p => key==='ALL' || p.role===key).length;
+    const count = players.filter(p => key==='ALL' || p.role===key).length;
     const b = el('button', 'btn '+(poolRoleFilter===key?'btn-gold':'btn-outline'), `${label} (${count})`);
     b.style.fontSize='12px'; b.style.padding='8px 12px';
     b.onclick = ()=>{ poolRoleFilter = key; render(); };
@@ -941,22 +1076,116 @@ function renderPoolPanel(panel){
   });
   panel.appendChild(filterBtns);
 
-  const filtered = pending.filter(p => poolRoleFilter==='ALL' || p.role===poolRoleFilter);
-  const listWrap = el('div',''); listWrap.style.maxHeight='480px'; listWrap.style.overflowY='auto';
-  if(!filtered.length){
-    listWrap.appendChild(el('div','','<div style="color:rgba(243,236,216,0.4);font-size:13px;">No pending players in this category.</div>'));
-  } else {
-    filtered.forEach(p=>{
-      const row = el('div',''); row.style.padding='10px 0'; row.style.borderBottom='1px solid var(--line)';
-      const top = el('div',''); top.style.display='flex'; top.style.justifyContent='space-between'; top.style.alignItems='center'; top.style.fontSize='14px';
-      top.innerHTML = `<span><span class="${ROLE_COLORS[p.role]}" style="font-weight:700;">${ROLE_LABELS[p.role]}</span> · ${p.name}</span><span class="mono" style="color:var(--gold-bright);">${fmtCr(p.base)}</span>`;
-      row.appendChild(top);
+  // consolidated management list grouped by status
+  const poolWrap = el('div',''); poolWrap.style.maxHeight='480px'; poolWrap.style.overflowY='auto';
+  ['pending','sold','unsold'].forEach(status=>{
+    const group = filteredAll.filter(p=>p.status===status);
+    if(!group.length) return;
+    const groupHeader = el('div',''); groupHeader.style.display='flex'; groupHeader.style.justifyContent='space-between'; groupHeader.style.alignItems='center'; groupHeader.style.margin='10px 0 4px';
+    groupHeader.appendChild(el('div','',`<div style="font-size:11px;text-transform:uppercase;color:rgba(243,236,216,0.4);">${status} (${group.length})</div>`));
+    if(status==='unsold'){
+      const requeueAll = el('a','link','↺ Re-queue all'); requeueAll.style.fontSize='11px';
+      requeueAll.onclick = async ()=>{
+        await Promise.all(group.map(p => writePlayer(p.id, { status:'pending' })));
+        group.forEach(p=>{ p.status='pending'; });
+        render();
+      };
+      groupHeader.appendChild(requeueAll);
+    }
+    poolWrap.appendChild(groupHeader);
+    group.forEach(p=>{
+      const rowWrap = el('div',''); rowWrap.style.padding='7px 0'; rowWrap.style.borderBottom='1px solid var(--line)';
+      const row = el('div',''); row.style.display='flex'; row.style.justifyContent='space-between'; row.style.alignItems='center'; row.style.fontSize='13px';
+      row.innerHTML = `<span><span class="${ROLE_COLORS[p.role]}" style="font-weight:700;">${ROLE_LABELS[p.role]}</span> · ${p.name}</span><span class="mono">${status==='sold'?fmtCr(p.soldPrice):fmtCr(p.base)}</span>`;
+      const actions = document.createElement('span'); actions.style.display='flex'; actions.style.alignItems='center'; actions.style.gap='8px'; actions.style.flexShrink='0';
+
+      const editLink = el('a','link','✎ Edit'); editLink.style.fontSize='11px';
+      editLink.title = `Edit ${p.name}'s details`;
+      editLink.onclick = (e)=>{
+        e.preventDefault();
+        rowWrap.innerHTML = '';
+        const ef = el('div',''); ef.style.display='grid'; ef.style.gridTemplateColumns='2fr 1fr 1fr'; ef.style.gap='8px'; ef.style.alignItems='center';
+        const eName = el('input',''); eName.value = p.name||'';
+        const eRole = el('select',''); eRole.innerHTML = `<option value="BAT">Batter</option><option value="BOWL">Bowler</option><option value="AR">All-Rounder</option><option value="WK">Wicketkeeper</option>`;
+        eRole.value = p.role||'BAT';
+        const eBase = el('input',''); eBase.type='number'; eBase.step='0.1'; eBase.value = p.base!=null?p.base:'0.5';
+        ef.appendChild(eName); ef.appendChild(eRole); ef.appendChild(eBase);
+        const eStatsToggle = el('a','link','+ stats'); eStatsToggle.style.fontSize='11px';
+        const eStats = el('div',''); eStats.style.display='none'; eStats.style.gridTemplateColumns='repeat(6,1fr)'; eStats.style.gap='6px'; eStats.style.marginTop='6px';
+        const emk = (val)=>{ const i = el('input',''); i.type='number'; i.value = val!=null?val:''; return i; };
+        const eMatches=emk(p.matches), eRuns=emk(p.runs), eSR=emk(p.strikeRate), eWkts=emk(p.wkts), eEcon=emk(p.econ), eCatches=emk(p.catches);
+        [eMatches,eRuns,eSR,eWkts,eEcon,eCatches].forEach(i=>eStats.appendChild(i));
+        eStatsToggle.onclick = ()=>{ eStats.style.display = eStats.style.display==='none' ? 'grid' : 'none'; };
+        const eff = el('div',''); eff.appendChild(ef);
+        const effStatsRow = el('div',''); effStatsRow.style.display='flex'; effStatsRow.style.alignItems='center'; effStatsRow.style.gap='8px'; effStatsRow.style.marginTop='6px';
+        effStatsRow.appendChild(eStatsToggle); effStatsRow.appendChild(eStats);
+        eff.appendChild(effStatsRow);
+        const eButtons = el('div',''); eButtons.style.marginTop='8px'; eButtons.style.display='flex'; eButtons.style.gap='8px';
+        const saveBtn = el('button','btn btn-gold','Save'); saveBtn.style.fontSize='12px'; saveBtn.style.padding='7px 14px';
+        saveBtn.onclick = async ()=>{
+          if(!eName.value.trim()) return;
+          const changes = {
+            name: eName.value.trim(),
+            role: eRole.value,
+            base: parseFloat(eBase.value)!=null && !isNaN(parseFloat(eBase.value)) ? parseFloat(eBase.value) : 0.5,
+            matches: parseFloat(eMatches.value)||0, runs: parseFloat(eRuns.value)||0, strikeRate: parseFloat(eSR.value)||0,
+            wkts: parseFloat(eWkts.value)||0, econ: parseFloat(eEcon.value)||0, catches: parseFloat(eCatches.value)||0
+          };
+          try{
+            await writePlayer(p.id, changes);
+            Object.assign(p, changes);
+            render();
+          }catch(err){ alert('Could not save: ' + (err.message||err)); }
+        };
+        const cancelBtn = el('button','btn btn-outline','Cancel'); cancelBtn.style.fontSize='12px'; cancelBtn.style.padding='7px 14px';
+        cancelBtn.onclick = ()=> render();
+        eButtons.appendChild(saveBtn); eButtons.appendChild(cancelBtn);
+        eff.appendChild(eButtons);
+        rowWrap.appendChild(eff);
+      };
+      actions.appendChild(editLink);
+
+      if(status==='pending'){
+        const rm = document.createElement('span'); rm.textContent='✕'; rm.style.cursor='pointer'; rm.style.color='var(--stamp-red)'; rm.style.fontSize='13px';
+        rm.onclick = async ()=>{ if(!(await confirmDeletePin('remove this player'))) return; players = players.filter(x=>x.id!==p.id); await savePlayers(); render(); };
+        actions.appendChild(rm);
+      }
+      if(status==='unsold'){
+        const rq = document.createElement('span'); rq.textContent=' ↺ Re-queue'; rq.style.cursor='pointer'; rq.style.color='var(--gold-bright)'; rq.style.fontSize='11px';
+        rq.onclick = async ()=>{ await writePlayer(p.id, { status:'pending' }); p.status='pending'; render(); };
+        actions.appendChild(rq);
+        const alloc = document.createElement('span'); alloc.textContent=' ▸ Give to team'; alloc.style.cursor='pointer'; alloc.style.color='var(--gold-bright)'; alloc.style.fontSize='11px';
+        alloc.title = `Allocate ${p.name} to a team at your chosen price`;
+        alloc.onclick = ()=>{
+          if(!teams.length){ alert('No teams available — add one in Setup first.'); return; }
+          const picked = prompt(`Allocate "${p.name}" to which team?`, teams[0].name);
+          if(picked == null || !picked.trim()) return;
+          const target = teams.find(t=>t.name.toLowerCase().trim()===picked.toLowerCase().trim());
+          if(!target){ alert(`No team named "${picked}". Available: ${teams.map(t=>t.name).join(', ')}`); return; }
+          const priceRaw = prompt(`Price for ${p.name} in ₹ Cr (blank = base price ${fmtCr(p.base||0)}):`, p.base);
+          if(priceRaw == null) return;
+          const price = priceRaw.trim()==='' ? p.base : parseFloat(priceRaw.trim());
+          if(isNaN(price) || price <= 0){ alert('Please enter a valid price greater than 0.'); return; }
+          if(!confirm(`Allocate ${p.name} to ${target.name} at ${fmtCr(price)}? This deducts the amount from their purse.`)) return;
+          allocateUnsold(p.id, target.id, price).then(()=>render()).catch(err=>alert('Could not allocate: ' + (err.message||err)));
+        };
+        actions.appendChild(alloc);
+      }
+      if(status==='sold'){
+        const teamName = (teams.find(t=>t.id===p.soldTo)||{}).name || '';
+        const rv = document.createElement('span'); rv.textContent=' ↺ Mark Unsold'; rv.style.cursor='pointer'; rv.style.color='var(--stamp-red)'; rv.style.fontSize='11px';
+        rv.title = `Resets ${p.name} to base price and returns ${fmtCr(p.soldPrice||p.base||0)} to ${teamName}`;
+        rv.onclick = ()=>{ if(!confirm(`Mark ${p.name} as unsold? This resets them to base price and returns ${fmtCr(p.soldPrice||p.base||0)} to ${teamName}.`)) return; markSoldAsUnsold(p.id).then(()=>render()).catch(err=>alert('Could not complete: ' + (err.message||err))); };
+        actions.appendChild(rv);
+      }
+      row.appendChild(actions);
+      rowWrap.appendChild(row);
       const stats = statsStripHTML(p);
-      if(stats) row.insertAdjacentHTML('beforeend', stats.replace('margin-top:10px','margin-top:6px'));
-      listWrap.appendChild(row);
+      if(stats) rowWrap.insertAdjacentHTML('beforeend', stats.replace('margin-top:10px','margin-top:3px'));
+      poolWrap.appendChild(rowWrap);
     });
-  }
-  panel.appendChild(listWrap);
+  });
+  panel.appendChild(poolWrap);
 }
 
 // ---------- AUDIT LOG TAB (admin only) ----------
@@ -1510,27 +1739,6 @@ function renderSetup(panel){
     await db.ref('settings/unsoldGraceDuration').set(finalVal);
   };
   unsoldGraceField.appendChild(unsoldGraceInput);
-  const poolVisibilityField = el('div','');
-  poolVisibilityField.appendChild(el('label','','"Pending Players" tab visibility'));
-  const ownerToggleRow = el('div',''); ownerToggleRow.style.display='flex'; ownerToggleRow.style.alignItems='center'; ownerToggleRow.style.gap='8px'; ownerToggleRow.style.marginTop='4px';
-  const ownerToggle = document.createElement('input'); ownerToggle.type='checkbox'; ownerToggle.checked = poolTabVisibleToOwner; ownerToggle.style.width='auto';
-  ownerToggle.onchange = async ()=>{
-    poolTabVisibleToOwner = ownerToggle.checked;
-    await db.ref('settings/poolTabVisibleToOwner').set(poolTabVisibleToOwner);
-  };
-  const ownerToggleLabel = el('span','','Visible to Team Owners'); ownerToggleLabel.style.fontSize='12px'; ownerToggleLabel.style.color='rgba(243,236,216,0.7)';
-  ownerToggleRow.appendChild(ownerToggle); ownerToggleRow.appendChild(ownerToggleLabel);
-  poolVisibilityField.appendChild(ownerToggleRow);
-  const spectatorToggleRow = el('div',''); spectatorToggleRow.style.display='flex'; spectatorToggleRow.style.alignItems='center'; spectatorToggleRow.style.gap='8px'; spectatorToggleRow.style.marginTop='6px';
-  const spectatorToggle = document.createElement('input'); spectatorToggle.type='checkbox'; spectatorToggle.checked = poolTabVisibleToSpectator; spectatorToggle.style.width='auto';
-  spectatorToggle.onchange = async ()=>{
-    poolTabVisibleToSpectator = spectatorToggle.checked;
-    await db.ref('settings/poolTabVisibleToSpectator').set(poolTabVisibleToSpectator);
-  };
-  const spectatorToggleLabel = el('span','','Visible to Spectators'); spectatorToggleLabel.style.fontSize='12px'; spectatorToggleLabel.style.color='rgba(243,236,216,0.7)';
-  spectatorToggleRow.appendChild(spectatorToggle); spectatorToggleRow.appendChild(spectatorToggleLabel);
-  poolVisibilityField.appendChild(spectatorToggleRow);
-  poolVisibilityField.appendChild(el('div','','<div style="font-size:10px;color:rgba(243,236,216,0.4);margin-top:6px;">Always visible to the Auctioneer</div>'));
   const spectatorLoginField = el('div',''); spectatorLoginField.style.marginTop='14px';
   spectatorLoginField.appendChild(el('label','','Spectator login'));
   const spectatorLoginRow = el('div',''); spectatorLoginRow.style.display='flex'; spectatorLoginRow.style.alignItems='center'; spectatorLoginRow.style.gap='8px'; spectatorLoginRow.style.marginTop='4px';
@@ -1543,7 +1751,7 @@ function renderSetup(panel){
   spectatorLoginRow.appendChild(spectatorLoginToggle); spectatorLoginRow.appendChild(spectatorLoginLabel);
   spectatorLoginField.appendChild(spectatorLoginRow);
   spectatorLoginField.appendChild(el('div','','<div style="font-size:10px;color:rgba(243,236,216,0.4);margin-top:4px;">When off, the Spectator button is hidden from the login screen until re-enabled.</div>'));
-  settingsWrap.appendChild(timerField); settingsWrap.appendChild(capField); settingsWrap.appendChild(minReqField); settingsWrap.appendChild(reserveField); settingsWrap.appendChild(cooldownField); settingsWrap.appendChild(unsoldGraceField); settingsWrap.appendChild(poolVisibilityField); settingsWrap.appendChild(spectatorLoginField);
+  settingsWrap.appendChild(timerField); settingsWrap.appendChild(capField); settingsWrap.appendChild(minReqField); settingsWrap.appendChild(reserveField); settingsWrap.appendChild(cooldownField); settingsWrap.appendChild(unsoldGraceField); settingsWrap.appendChild(spectatorLoginField);
   panel.appendChild(settingsWrap);
 
   // add team
@@ -1584,219 +1792,6 @@ function renderSetup(panel){
     teamList.appendChild(chip);
   });
   panel.appendChild(teamList);
-
-  // add player
-  panel.appendChild(el('div','','<div style="height:22px;"></div>'));
-  panel.appendChild(el('div','','<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:rgba(243,236,216,0.5);margin-bottom:10px;">Player Pool</div>'));
-  const pForm = el('div',''); pForm.style.display='grid'; pForm.style.gridTemplateColumns='2fr 1fr 1fr auto'; pForm.style.gap='10px';
-  const pName = el('input',''); pName.placeholder='Player name';
-  const pRole = el('select',''); pRole.innerHTML = `<option value="BAT">Batter</option><option value="BOWL">Bowler</option><option value="AR">All-Rounder</option><option value="WK">Wicketkeeper</option>`;
-  const pBase = el('input',''); pBase.placeholder='Base (₹ Cr)'; pBase.type='number'; pBase.value='0.5'; pBase.step='0.1';
-  const pAdd = el('button','btn btn-gold','+ Add');
-  pForm.appendChild(pName); pForm.appendChild(pRole); pForm.appendChild(pBase); pForm.appendChild(pAdd);
-  panel.appendChild(pForm);
-
-  // optional stats row (collapsed by default)
-  const statsToggle = el('a','link','+ Add stats (matches, runs, SR, wkts, econ, catches)');
-  statsToggle.style.fontSize='11px'; statsToggle.style.display='inline-block'; statsToggle.style.marginTop='8px';
-  panel.appendChild(statsToggle);
-  const statsRow = el('div',''); statsRow.style.display='none'; statsRow.style.gridTemplateColumns='repeat(6,1fr)'; statsRow.style.gap='8px'; statsRow.style.marginTop='8px';
-  const mkStat = (ph)=>{ const i = el('input',''); i.placeholder=ph; i.type='number'; i.value=''; return i; };
-  const sMatches = mkStat('Matches'), sRuns = mkStat('Runs'), sSR = mkStat('Strike Rate'), sWkts = mkStat('Wkts'), sEcon = mkStat('Econ'), sCatches = mkStat('Catches');
-  [sMatches,sRuns,sSR,sWkts,sEcon,sCatches].forEach(i=>statsRow.appendChild(i));
-  panel.appendChild(statsRow);
-  statsToggle.onclick = ()=>{ statsRow.style.display = statsRow.style.display==='none' ? 'grid' : 'none'; };
-
-  pAdd.onclick = async ()=>{
-    if(!pName.value.trim()) return;
-    players.push({
-      id:uid(), name:pName.value.trim(), role:pRole.value, base: parseFloat(pBase.value)||0.5, status:'pending',
-      matches: parseFloat(sMatches.value)||0, runs: parseFloat(sRuns.value)||0, strikeRate: parseFloat(sSR.value)||0,
-      wkts: parseFloat(sWkts.value)||0, econ: parseFloat(sEcon.value)||0, catches: parseFloat(sCatches.value)||0
-    });
-    await savePlayers();
-    pName.value=''; sMatches.value=''; sRuns.value=''; sSR.value=''; sWkts.value=''; sEcon.value=''; sCatches.value='';
-    render();
-  };
-
-  // Bulk import from Excel/CSV
-  const importWrap = el('div',''); importWrap.style.marginTop='14px'; importWrap.style.padding='12px'; importWrap.style.border='1px dashed var(--line)'; importWrap.style.borderRadius='10px';
-  importWrap.innerHTML = `<div style="font-size:12px;color:rgba(243,236,216,0.6);margin-bottom:8px;">Bulk import players from Excel/CSV — columns: <span class="mono">Name</span>, <span class="mono">Role</span>, <span class="mono">Base</span>, and optionally <span class="mono">Matches</span>, <span class="mono">Runs</span>, <span class="mono">Strike Rate</span>, <span class="mono">Wkts</span>, <span class="mono">Econ</span>, <span class="mono">Catches</span>, <span class="mono">Team</span>, <span class="mono">Value</span> — column header wording is flexible. Fill in Team + Value for a row to auto-allocate that player to the team at that price (purse deducted, marked sold) instead of adding to the pending pool.</div>`;
-  const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='.xlsx,.xls,.csv';
-  fileInput.style.fontSize='12px'; fileInput.style.color='var(--cream)';
-  const importStatus = el('div',''); importStatus.style.fontSize='12px'; importStatus.style.marginTop='8px'; importStatus.style.color='var(--gold-bright)';
-
-  // Fuzzy header matcher: finds the actual column key for a given field, tolerant of
-  // spacing/case/wording differences (e.g. "Base Price (Cr)", "base_price", "Strike Rate").
-  function findKey(rowKeys, candidates){
-    const norm = k => k.toLowerCase().replace(/[^a-z0-9]/g,'');
-    const normKeys = rowKeys.map(k => ({ raw:k, norm: norm(k) }));
-    for(const cand of candidates){
-      const c = norm(cand);
-      const exact = normKeys.find(k => k.norm === c);
-      if(exact) return exact.raw;
-    }
-    for(const cand of candidates){
-      const c = norm(cand);
-      const partial = normKeys.find(k => k.norm.includes(c));
-      if(partial) return partial.raw;
-    }
-    return null;
-  }
-  function parseNum(v){
-    if(v === undefined || v === null || v === '') return 0;
-    const cleaned = String(v).replace(/[^0-9.\-]/g,'');
-    const n = parseFloat(cleaned);
-    return isNaN(n) ? 0 : n;
-  }
-  function normalizeRole(raw){
-    const r = String(raw||'').toUpperCase();
-    if(r.includes('BOWL')) return 'BOWL';
-    if(r.includes('ALL') || r === 'AR') return 'AR';
-    if(r.includes('WK') || r.includes('KEEP')) return 'WK';
-    return 'BAT';
-  }
-
-  fileInput.onchange = async (e)=>{
-    const file = e.target.files[0]; if(!file) return;
-    importStatus.textContent = 'Reading file…';
-    try{
-      const data = await file.arrayBuffer();
-      const wb = XLSX.read(data, {type:'array'});
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, {defval:''});
-      let added = 0, skipped = 0, allocated = 0, unmatchedTeam = 0;
-      rows.forEach(r=>{
-        const keys = Object.keys(r);
-        const nameKey = findKey(keys, ['name','player','playername']);
-        const roleKey = findKey(keys, ['role','position','category','type']);
-        const baseKey = findKey(keys, ['base','baseprice','price','basepricecr']);
-        const matchesKey = findKey(keys, ['matches','mat']);
-        const runsKey = findKey(keys, ['runs']);
-        const srKey = findKey(keys, ['strikerate','sr']);
-        const wktsKey = findKey(keys, ['wkts','wickets']);
-        const econKey = findKey(keys, ['econ','economy']);
-        const catchesKey = findKey(keys, ['catches','ct']);
-        const teamKey = findKey(keys, ['team','allocatedteam','soldto','teamname']);
-        const valueKey = findKey(keys, ['value','soldprice','soldamount','soldvalue','amount']);
-
-        const nameVal = nameKey ? r[nameKey] : '';
-        if(!nameVal || !String(nameVal).trim()){ skipped++; return; }
-
-        const newPlayer = {
-          id: uid(),
-          name: String(nameVal).trim(),
-          role: normalizeRole(roleKey ? r[roleKey] : 'BAT'),
-          base: baseKey ? (parseNum(r[baseKey]) || 0.5) : 0.5,
-          status:'pending',
-          matches: matchesKey ? parseNum(r[matchesKey]) : 0,
-          runs: runsKey ? parseNum(r[runsKey]) : 0,
-          strikeRate: srKey ? parseNum(r[srKey]) : 0,
-          wkts: wktsKey ? parseNum(r[wktsKey]) : 0,
-          econ: econKey ? parseNum(r[econKey]) : 0,
-          catches: catchesKey ? parseNum(r[catchesKey]) : 0
-        };
-
-        // Optional Team + Value → auto-allocate this player immediately
-        const teamNameRaw = teamKey ? String(r[teamKey]||'').trim() : '';
-        const valueRaw = valueKey ? r[valueKey] : '';
-        if(teamNameRaw && valueRaw !== '' && valueRaw !== undefined && valueRaw !== null){
-          const matchedTeam = teams.find(t => t.name.toLowerCase().trim() === teamNameRaw.toLowerCase());
-          const price = parseNum(valueRaw);
-          if(matchedTeam && price > 0){
-            newPlayer.status = 'sold';
-            newPlayer.soldTo = matchedTeam.id;
-            newPlayer.soldPrice = price;
-            matchedTeam.spent = (matchedTeam.spent||0) + price;
-            matchedTeam.roster = [...(matchedTeam.roster||[]), { playerId: newPlayer.id, price }];
-            allocated++;
-          } else if(!matchedTeam){
-            unmatchedTeam++;
-          }
-        }
-
-        players.push(newPlayer);
-        added++;
-      });
-      await savePlayers();
-      await saveTeams();
-      importStatus.style.color = 'var(--gold-bright)';
-      let summary = `Imported ${added} player(s)`;
-      if(allocated) summary += `, ${allocated} auto-allocated to teams`;
-      if(unmatchedTeam) summary += `, ${unmatchedTeam} had a team name that didn't match any existing team (added as pending instead)`;
-      if(skipped) summary += `, skipped ${skipped} row(s) without a name`;
-      importStatus.textContent = summary + '.';
-      fileInput.value = '';
-      render();
-    }catch(err){
-      importStatus.style.color = 'var(--stamp-red)';
-      importStatus.textContent = 'Could not read that file — make sure it\'s a valid .xlsx/.xls/.csv with a header row.';
-    }
-  };
-  importWrap.appendChild(fileInput);
-  importWrap.appendChild(importStatus);
-  panel.appendChild(importWrap);
-
-  const poolWrap = el('div',''); poolWrap.style.marginTop='12px'; poolWrap.style.maxHeight='320px'; poolWrap.style.overflowY='auto';
-  ['pending','sold','unsold'].forEach(status=>{
-    const group = players.filter(p=>p.status===status);
-    if(!group.length) return;
-    const groupHeader = el('div',''); groupHeader.style.display='flex'; groupHeader.style.justifyContent='space-between'; groupHeader.style.alignItems='center'; groupHeader.style.margin='10px 0 4px';
-    groupHeader.appendChild(el('div','',`<div style="font-size:11px;text-transform:uppercase;color:rgba(243,236,216,0.4);">${status} (${group.length})</div>`));
-    if(status==='unsold'){
-      const requeueAll = el('a','link','↺ Re-queue all'); requeueAll.style.fontSize='11px';
-      requeueAll.onclick = async ()=>{
-        await Promise.all(group.map(p => writePlayer(p.id, { status:'pending' })));
-        group.forEach(p=>{ p.status='pending'; });
-        render();
-      };
-      groupHeader.appendChild(requeueAll);
-    }
-    poolWrap.appendChild(groupHeader);
-    group.forEach(p=>{
-      const rowWrap = el('div',''); rowWrap.style.padding='7px 0'; rowWrap.style.borderBottom='1px solid var(--line)';
-      const row = el('div',''); row.style.display='flex'; row.style.justifyContent='space-between'; row.style.fontSize='13px';
-      row.innerHTML = `<span><span class="${ROLE_COLORS[p.role]}" style="font-weight:700;">${ROLE_LABELS[p.role]}</span> · ${p.name}</span><span class="mono">${status==='sold'?fmtCr(p.soldPrice):fmtCr(p.base)}</span>`;
-      if(status==='pending'){
-        const rm = document.createElement('span'); rm.textContent='✕'; rm.style.cursor='pointer'; rm.style.color='var(--stamp-red)'; rm.style.marginLeft='10px';
-        rm.onclick = async ()=>{ if(!(await confirmDeletePin('remove this player'))) return; players = players.filter(x=>x.id!==p.id); await savePlayers(); render(); };
-        row.querySelector('span').appendChild(rm);
-      }
-      if(status==='unsold'){
-        const rq = document.createElement('span'); rq.textContent=' ↺ Re-queue'; rq.style.cursor='pointer'; rq.style.color='var(--gold-bright)'; rq.style.marginLeft='10px'; rq.style.fontSize='11px';
-        rq.onclick = async ()=>{ await writePlayer(p.id, { status:'pending' }); p.status='pending'; render(); };
-        row.querySelector('span').appendChild(rq);
-        const alloc = document.createElement('span'); alloc.textContent=' ▸ Give to team'; alloc.style.cursor='pointer'; alloc.style.color='var(--gold-bright)'; alloc.style.marginLeft='10px'; alloc.style.fontSize='11px';
-        alloc.title = `Allocate ${p.name} to a team at your chosen price`;
-        alloc.onclick = ()=>{
-          if(!teams.length){ alert('No teams available — add one in Setup first.'); return; }
-          const picked = prompt(`Allocate "${p.name}" to which team?`, teams[0].name);
-          if(picked == null || !picked.trim()) return;
-          const target = teams.find(t=>t.name.toLowerCase().trim()===picked.toLowerCase().trim());
-          if(!target){ alert(`No team named "${picked}". Available: ${teams.map(t=>t.name).join(', ')}`); return; }
-          const priceRaw = prompt(`Price for ${p.name} in ₹ Cr (blank = base price ${fmtCr(p.base||0)}):`, p.base);
-          if(priceRaw == null) return;
-          const price = priceRaw.trim()==='' ? p.base : parseFloat(priceRaw.trim());
-          if(isNaN(price) || price <= 0){ alert('Please enter a valid price greater than 0.'); return; }
-          if(!confirm(`Allocate ${p.name} to ${target.name} at ${fmtCr(price)}? This deducts the amount from their purse.`)) return;
-          allocateUnsold(p.id, target.id, price).then(()=>render()).catch(err=>alert('Could not allocate: ' + (err.message||err)));
-        };
-        row.querySelector('span').appendChild(alloc);
-      }
-      if(status==='sold'){
-        const teamName = (teams.find(t=>t.id===p.soldTo)||{}).name || '';
-        const rv = document.createElement('span'); rv.textContent=' ↺ Mark Unsold'; rv.style.cursor='pointer'; rv.style.color='var(--stamp-red)'; rv.style.marginLeft='10px'; rv.style.fontSize='11px';
-        rv.title = `Resets ${p.name} to base price and returns ${fmtCr(p.soldPrice||p.base||0)} to ${teamName}`;
-        rv.onclick = ()=>{ if(!confirm(`Mark ${p.name} as unsold? This resets them to base price and returns ${fmtCr(p.soldPrice||p.base||0)} to ${teamName}.`)) return; markSoldAsUnsold(p.id).then(()=>render()).catch(err=>alert('Could not complete: ' + (err.message||err))); };
-        row.querySelector('span').appendChild(rv);
-      }
-      rowWrap.appendChild(row);
-      const stats = statsStripHTML(p);
-      if(stats) rowWrap.insertAdjacentHTML('beforeend', stats.replace('margin-top:10px','margin-top:3px'));
-      poolWrap.appendChild(rowWrap);
-    });
-  });
-  panel.appendChild(poolWrap);
 
   // danger zone
   const reset = el('button','btn btn-outline','Reset Entire Auction'); reset.style.marginTop='18px'; reset.style.borderColor='var(--stamp-red)'; reset.style.color='var(--stamp-red)';

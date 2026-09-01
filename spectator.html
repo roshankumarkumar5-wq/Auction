@@ -317,14 +317,6 @@ function attachRealtimeListeners(){
     squadMinRequired = (snap.exists() && typeof snap.val() === 'number' && snap.val() > 0) ? snap.val() : null;
     if(screen === 'app' && activeTab !== 'setup') render();
   });
-  db.ref('settings/poolTabVisibleToOwner').on('value', (snap)=>{
-    poolTabVisibleToOwner = snap.exists() ? !!snap.val() : true;
-    if(screen === 'app' && activeTab !== 'setup') render();
-  });
-  db.ref('settings/poolTabVisibleToSpectator').on('value', (snap)=>{
-    poolTabVisibleToSpectator = snap.exists() ? !!snap.val() : true;
-    if(screen === 'app' && activeTab !== 'setup') render();
-  });
   db.ref('settings/spectatorLoginEnabled').on('value', (snap)=>{
     spectatorLoginEnabled = snap.exists() ? !!snap.val() : false;
     if(screen === 'login') render();
@@ -738,9 +730,6 @@ function renderLogin(){
 // ---------- APP SHELL ----------
 let activeTab = 'live'; // 'live' | 'setup' | 'teams' | 'audit'
 let pickerRoleFilter = 'ALL'; // auctioneer's category filter for the random "next player" draw
-let poolRoleFilter = 'ALL'; // category filter for the Pending Players tab (all roles can use this)
-let poolTabVisibleToOwner = true; // Setup-configurable: show Pending Players tab to Team Owners
-let poolTabVisibleToSpectator = true; // Setup-configurable: show Pending Players tab to Spectators
 let actionInProgress = false; // guards against double-submitting SOLD/UNSOLD/UNDO on a slow connection
 let timerDuration = 10; // seconds — configurable in Setup, resets on every new bid
 let timerEnabled = false; // whether the countdown is shown at all — off by default, toggle in Setup
@@ -779,7 +768,6 @@ function renderApp(){
   const tabs = el('div',''); tabs.style.display='flex'; tabs.style.gap='6px'; tabs.style.marginBottom='0'; tabs.style.flexWrap='wrap';
   const tabDefs = [['live','Live Auction']];
   tabDefs.push(['teams', 'Teams']);
-  if(poolTabVisibleToSpectator) tabDefs.push(['pool','Pending Players']);
   tabDefs.forEach(([key,label])=>{
     const t = el('div', 'tab'+(activeTab===key?' active':''), label);
     t.onclick = ()=>{ activeTab = key; render(); };
@@ -790,48 +778,12 @@ function renderApp(){
   const panel = el('div','card'); panel.style.borderRadius='0 10px 10px 10px';
   const isAdmin = me.role==='admin';
   if(activeTab==='live') renderLive(panel);
-  else if(activeTab==='pool') renderPoolPanel(panel);
   else renderTeamsPanel(panel);
   root.appendChild(panel);
 }
 
 // ---------- ACTIVITY TAB (everyone) ----------
 
-
-// ---------- PENDING PLAYERS TAB (everyone) ----------
-function renderPoolPanel(panel){
-  panel.appendChild(el('div','display',`<span style="font-size:20px;color:var(--gold-bright);">Pending Players</span>`));
-  panel.appendChild(el('div','','<div style="font-size:12px;color:rgba(243,236,216,0.5);margin:6px 0 14px;">Players still left to come up for auction, by category.</div>'));
-
-  const pending = players.filter(p=>p.status==='pending');
-
-  const filterBtns = el('div',''); filterBtns.style.display='flex'; filterBtns.style.gap='6px'; filterBtns.style.flexWrap='wrap'; filterBtns.style.marginBottom='16px';
-  [['ALL','All Roles'],['BAT','Batters'],['BOWL','Bowlers'],['AR','All-Rounders'],['WK','Wicketkeepers']].forEach(([key,label])=>{
-    const count = pending.filter(p => key==='ALL' || p.role===key).length;
-    const b = el('button', 'btn '+(poolRoleFilter===key?'btn-gold':'btn-outline'), `${label} (${count})`);
-    b.style.fontSize='12px'; b.style.padding='8px 12px';
-    b.onclick = ()=>{ poolRoleFilter = key; render(); };
-    filterBtns.appendChild(b);
-  });
-  panel.appendChild(filterBtns);
-
-  const filtered = pending.filter(p => poolRoleFilter==='ALL' || p.role===poolRoleFilter);
-  const listWrap = el('div',''); listWrap.style.maxHeight='480px'; listWrap.style.overflowY='auto';
-  if(!filtered.length){
-    listWrap.appendChild(el('div','','<div style="color:rgba(243,236,216,0.4);font-size:13px;">No pending players in this category.</div>'));
-  } else {
-    filtered.forEach(p=>{
-      const row = el('div',''); row.style.padding='10px 0'; row.style.borderBottom='1px solid var(--line)';
-      const top = el('div',''); top.style.display='flex'; top.style.justifyContent='space-between'; top.style.alignItems='center'; top.style.fontSize='14px';
-      top.innerHTML = `<span><span class="${ROLE_COLORS[p.role]}" style="font-weight:700;">${ROLE_LABELS[p.role]}</span> · ${p.name}</span><span class="mono" style="color:var(--gold-bright);">${fmtCr(p.base)}</span>`;
-      row.appendChild(top);
-      const stats = statsStripHTML(p);
-      if(stats) row.insertAdjacentHTML('beforeend', stats.replace('margin-top:10px','margin-top:6px'));
-      listWrap.appendChild(row);
-    });
-  }
-  panel.appendChild(listWrap);
-}
 
 // ---------- AUDIT LOG TAB (admin only) ----------
 let auditEntries = [];
