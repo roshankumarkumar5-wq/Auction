@@ -1,0 +1,15 @@
+# Node / build artifacts (only relevant if using the Worker/wrangler path)
+node_modules/
+dist/
+.pages/
+
+# Cloudflare / Wrangler local state
+.wrangler/
+.dev.vars
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local backup copies that shouldn't be published
+index_5_backup.html
