@@ -1,23 +1,27 @@
-# Cloudflare Pages configuration for the LA Black Squad auction app.
+# Cloudflare deployment configuration for the LA Black Squad auction app.
 #
-# This is a multi-page static site: every page is its own .html file at the
+# This is a MULTI-PAGE static site: every page is its own .html file at the
 # root (index.html = login, admin.html, owner.html, spectator.html). They
-# link/redirect to each other by filename, so all files must live in the
-# same directory root — which is the whole folder being deployed.
+# link/redirect to each other by filename, so all files live in this same
+# root folder.
 #
-# Deploy with:  npx wrangler pages deploy .
-# (Run from the folder that contains the .html files, i.e. the root.)
-# Or simply "Connect to Git" in the Cloudflare dashboard and it auto-deploys
-# on every push to the main branch.
+# This config makes `npx wrangler deploy` publish the folder as STATIC
+# ASSETS (served by a Worker using its built-in [assets] handler) rather
+# than running a hello-world worker function. JSON/html assets are served
+# directly; unknown paths get a real 404 (multi-page app, no SPA fallback).
 
-name = "la-black-squad-auction"
+# MUST match the project name your Cloudflare CI expects (the build log
+# showed: CI system expected "auction").
+name = "auction"
+
+# Required by Worker Builds when publishing.
+compatibility_date = "2026-09-01"
 
 # Serve the static files in this directory (the project root).
 [assets]
-directory = "."
-# Multi-page static site -> no SPA fallback. Unknown paths get a real 404.
+directory = "./"
 not_found_handling = "404-page"
 
-# Optional: only used when deploying via Wrangler directly.
 [env.production]
-name = "la-black-squad-auction"
+name = "auction"
+compatibility_date = "2026-09-01"
